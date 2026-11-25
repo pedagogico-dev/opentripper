@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; background: #0A0E17; }
+  .hud { position: absolute; z-index: 1000; font-family: monospace; color: #E8EDF3; }
+  #info { top: 12px; left: 12px; background: rgba(20,28,40,.88); border: 1px solid #232F42;
+          border-radius: 12px; padding: 6px 12px; }
+  #speed { font-size: 32px; font-weight: bold; color: #22C785; }
+  #unit  { font-size: 12px; color: #8B9BB4; margin-left: 4px; }
+  #hdg   { display: block; font-size: 12px; color: #00C2D9; }
+  .fab { right: 12px; width: 48px; height: 48px; border-radius: 24px; border: 1px solid #232F42;
+         background: rgba(20,28,40,.92); color: #00C2D9; font-size: 22px; line-height: 46px;
+         text-align: center; }
+  #rc { bottom: 28px; display: none; }
+  #tl { bottom: 88px; }
+  #wait { top: 50%; left: 0; right: 0; text-align: center; color: #F5A623; font-size: 14px;
+          transform: translateY(-50%); pointer-events: none; }
+  .leaflet-control-attribution { font-size: 9px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="info" class="hud"><span id="speed">0</span><span id="unit">km/h</span><span id="hdg">-- N</span></div>
+<div id="tl" class="hud fab">&#9788;</div>
+<div id="rc" class="hud fab">&#9678;</div>
+<div id="wait" class="hud">Aguardando sinal de GPS...</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+var map = L.map('map', { zoomControl: false }).setView([-14.2, -51.9], 4);
+var layers = {
+  escuro: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+          { maxZoom: 19, subdomains: 'abcd', attribution: '&copy; OpenStreetMap &copy; CARTO' }),
+  rua:    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          { maxZoom: 19, attribution: '&copy; OpenStreetMap' })
+};
+var current = 'escuro';
+layers[current].addTo(map);
+
+var icon = L.divIcon({
+  className: '', iconSize: [40, 40], iconAnchor: [20, 20],
+  html: '<div id="arrow"><svg viewBox="0 0 40 40" width="40" height="40">' +
+        '<circle cx="20" cy="20" r="18" fill="rgba(0,194,217,.18)"/>' +
+        '<path d="M20 4 L31 33 L20 27 L9 33 Z" fill="#00C2D9" stroke="#0A0E17" stroke-width="2"/>' +
+        '</svg></div>'
+});
+
+var marker = null, accCircle = null, trail = L.polyline([], { color: '#00C2D9', weight: 4, opacity: .8 }).addTo(map);
+var follow = true, lastLL = null, lastBucket = -1, lastBrg = 0, pts = [];
+var rc = document.getElementById('rc'), tl = document.getElementById('tl');
+
+function bucketFor(kmh) { return kmh < 25 ? 0 : (kmh < 70 ? 1 : 2); }
+function zoomFor(b) { return b === 0 ? 17 : (b === 1 ? 16 : 15); }
+function cardinal(d) { return ['N','NE','L','SE','S','SO','O','NO'][Math.round(d / 45) % 8]; }
+
+// Chamado pelo Android a cada fix de GPS. brg = -1 quando nao ha rumo confiavel.
+function updatePos(lat, lng, brg, kmh, acc) {
+  var ll = [lat, lng];
+  lastLL = ll;
+  document.getElementById('wait').style.display = 'none';
+  if (!marker) {
+    marker = L.marker(ll, { icon: icon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+    accCircle = L.circle(ll, { radius: acc, color: '#00C2D9', weight: 1, fillOpacity: .08 }).addTo(map);
+    map.setView(ll, 17);
+  } else {
+    marker.setLatLng(ll);
+    accCircle.setLatLng(ll).setRadius(acc);
+  }
+  if (brg >= 0) lastBrg = brg;
+  var arrow = document.getElementById('arrow');
+  if (arrow) arrow.style.transform = 'rotate(' + lastBrg + 'deg)';
+
+  pts.push(ll);
+  if (pts.length > 1500) pts = pts.slice(-1000);
+  trail.setLatLngs(pts);
+
+  document.getElementById('speed').textContent = Math.round(kmh);
+  document.getElementById('hdg').textContent = Math.round(lastBrg) + '\u00B0 ' + cardinal(lastBrg);
+
+  if (follow) {
+    var b = bucketFor(kmh);
+    if (b !== lastBucket) { lastBucket = b; map.setView(ll, zoomFor(b), { animate: true }); }
+    else { map.panTo(ll, { animate: true, duration: .8 }); }
+  }
+}
+
+map.on('dragstart', function () { follow = false; rc.style.display = 'block'; });
+rc.addEventListener('click', function () {
+  follow = true; rc.style.display = 'none';
+  if (lastLL) map.setView(lastLL, map.getZoom(), { animate: true });
+});
+tl.addEventListener('click', function () {
+  map.removeLayer(layers[current]);
+  current = (current === 'escuro') ? 'rua' : 'escuro';
+  layers[current].addTo(map);
+});
+</script>
+</body>
+</html>

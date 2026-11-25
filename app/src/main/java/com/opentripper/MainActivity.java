@@ -125,6 +125,11 @@ public class MainActivity extends Activity implements TripperBridge.Listener, Di
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // OpenTripper: aba Mapa
+        android.view.View mapTab = findViewById(R.id.btnTabMap);
+        if (mapTab != null) mapTab.setOnClickListener(v ->
+                startActivity(new android.content.Intent(MainActivity.this, MapActivity.class)));
+
         prefs = getSharedPreferences("opentripper_prefs", Context.MODE_PRIVATE);
 
         // 1. Inicializa Top Bar

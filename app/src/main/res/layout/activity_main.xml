@@ -849,6 +849,16 @@
             android:text="🔧\nAparelho"
             android:textColor="#8B9BB4"
             android:textSize="11sp" />
+
+        <Button
+        android:id="@+id/btnTabMap"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:text="&#128506;&#10;Mapa"
+        android:textSize="11sp"
+        android:textColor="#8B9BB4"
+        style="?android:attr/borderlessButtonStyle" />
     </LinearLayout>
 
 </LinearLayout>

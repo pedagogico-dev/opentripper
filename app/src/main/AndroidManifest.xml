@@ -20,6 +20,8 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -53,6 +55,8 @@
             android:name=".TripperService"
             android:foregroundServiceType="connectedDevice|location"
             android:exported="false" />
+        <activity android:name=".MapActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
     </application>
 
 </manifest>
