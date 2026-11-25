@@ -19,13 +19,30 @@
   #tl { bottom: 88px; }
   #wait { top: 50%; left: 0; right: 0; text-align: center; color: #F5A623; font-size: 14px;
           transform: translateY(-50%); pointer-events: none; }
+  #rt    { display: none; font-size: 12px; color: #F5A623; margin-top: 2px; }
+  #bar { top: 92px; left: 12px; right: 12px; display: flex; gap: 6px; }
+  #q { flex: 1; min-width: 0; background: rgba(20,28,40,.94); color: #E8EDF3; border: 1px solid #232F42;
+       border-radius: 12px; padding: 10px 12px; font-size: 14px; font-family: sans-serif; outline: none; }
+  #bar button { width: 44px; border-radius: 12px; border: 1px solid #232F42;
+       background: rgba(20,28,40,.94); color: #00C2D9; font-size: 18px; }
+  #res { top: 146px; left: 12px; right: 12px; max-height: 40%; overflow: auto; display: none;
+         background: rgba(20,28,40,.97); border: 1px solid #232F42; border-radius: 12px; }
+  .it { padding: 10px 12px; border-bottom: 1px solid #232F42; font: 13px sans-serif; }
+  #ds { bottom: 148px; }
+  #ds.on { background: #00C2D9; color: #0A0E17; }
+  #hint { bottom: 20px; left: 12px; right: 72px; text-align: center; display: none; font: 13px sans-serif;
+          background: rgba(20,28,40,.94); border: 1px solid #00C2D9; border-radius: 12px; padding: 10px; }
   .leaflet-control-attribution { font-size: 9px; }
 .tiles-dark{filter:invert(1) hue-rotate(180deg) brightness(.95) contrast(.9)}
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="info" class="hud"><span id="speed">0</span><span id="unit">km/h</span><span id="hdg">-- N</span></div>
+<div id="info" class="hud"><span id="speed">0</span><span id="unit">km/h</span><span id="hdg">-- N</span><span id="rt"></span></div>
+<div id="bar" class="hud"><input id="q" type="text" placeholder="Buscar destino..." enterkeyhint="search"><button id="go">&#128269;</button><button id="cl" style="display:none">&#10005;</button></div>
+<div id="res" class="hud"></div>
+<div id="ds" class="hud fab">&#128205;</div>
+<div id="hint" class="hud">Toque no mapa para escolher o destino</div>
 <div id="tl" class="hud fab">&#9788;</div>
 <div id="rc" class="hud fab">&#9678;</div>
 <div id="wait" class="hud">Aguardando sinal de GPS...</div>
@@ -33,7 +50,8 @@
 <script>
 var map = L.map('map', { zoomControl: false }).setView([-14.2, -51.9], 4);
 var layers = {
-  escuro: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, className: 'tiles-dark', attribution: '(c) OpenStreetMap' }),
+  escuro: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          { maxZoom: 19, className: 'tiles-dark', attribution: '&copy; OpenStreetMap &copy; CARTO' }),
   rua:    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           { maxZoom: 19, attribution: '&copy; OpenStreetMap' })
 };
@@ -48,6 +66,7 @@ var icon = L.divIcon({
         '</svg></div>'
 });
 
+var routeLine = L.polyline([], { color: '#F5A623', weight: 6, opacity: .85 }).addTo(map);
 var marker = null, accCircle = null, trail = L.polyline([], { color: '#00C2D9', weight: 4, opacity: .8 }).addTo(map);
 var follow = true, lastLL = null, lastBucket = -1, lastBrg = 0, pts = [];
 var rc = document.getElementById('rc'), tl = document.getElementById('tl');
@@ -80,6 +99,10 @@ function updatePos(lat, lng, brg, kmh, acc) {
   document.getElementById('speed').textContent = Math.round(kmh);
   document.getElementById('hdg').textContent = Math.round(lastBrg) + '\u00B0 ' + cardinal(lastBrg);
 
+  if (resumeOnMove && kmh > 15) { follow = true; resumeOnMove = false; rc.style.display = 'none'; lastBucket = -1; }
+  if (dest && !rpts.length && !fetching) fetchRoute(ll, true);
+  progress(ll);
+
   if (follow) {
     var b = bucketFor(kmh);
     if (b !== lastBucket) { lastBucket = b; map.setView(ll, zoomFor(b), { animate: true }); }
@@ -87,7 +110,7 @@ function updatePos(lat, lng, brg, kmh, acc) {
   }
 }
 
-map.on('dragstart', function () { follow = false; rc.style.display = 'block'; });
+map.on('dragstart', function () { follow = false; resumeOnMove = false; rc.style.display = 'block'; });
 rc.addEventListener('click', function () {
   follow = true; rc.style.display = 'none';
   if (lastLL) map.setView(lastLL, map.getZoom(), { animate: true });
@@ -96,6 +119,130 @@ tl.addEventListener('click', function () {
   map.removeLayer(layers[current]);
   current = (current === 'escuro') ? 'rua' : 'escuro';
   layers[current].addTo(map);
+});
+
+// ---------- Rota ate um destino (OSRM) e busca (Nominatim) ----------
+var dest = null, destMarker = null, rpts = [], cum = [], total = 1, dur = 0, ridx = 0;
+var fetching = false, lastFetch = 0, offCount = 0, resumeOnMove = false, pickMode = false;
+var q = document.getElementById('q'), res = document.getElementById('res'), hint = document.getElementById('hint');
+var clBtn = document.getElementById('cl'), dsBtn = document.getElementById('ds'), rtEl = document.getElementById('rt');
+var flag = L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [6, 28],
+                       html: '<div style="font-size:26px;line-height:26px">&#127937;</div>' });
+
+function setRt(t) { rtEl.textContent = t; rtEl.style.display = t ? 'block' : 'none'; }
+function fmtDist(m) { return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1).replace('.', ',') + ' km'; }
+function fmtEta(s) {
+  var min = Math.max(1, Math.round(s / 60)), t = new Date(Date.now() + s * 1000);
+  var hh = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
+  var txt = min < 60 ? min + ' min' : Math.floor(min / 60) + 'h' + ('0' + (min % 60)).slice(-2);
+  return txt + ' \u00B7 chegada ' + hh;
+}
+function hav(a, b) {
+  var R = 6371000, r = Math.PI / 180, dLa = (b[0] - a[0]) * r, dLo = (b[1] - a[1]) * r;
+  var x = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+          Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+function segDist(p, a, b) {
+  var k = Math.cos(p[0] * Math.PI / 180), px = p[1] * k, py = p[0], ax = a[1] * k, ay = a[0];
+  var dx = b[1] * k - ax, dy = b[0] - ay, den = dx * dx + dy * dy;
+  var t = den ? ((px - ax) * dx + (py - ay) * dy) / den : 0;
+  t = Math.max(0, Math.min(1, t));
+  return { d: Math.hypot(px - (ax + t * dx), py - (ay + t * dy)) * 111320, t: t };
+}
+
+function clearRoute() {
+  dest = null; rpts = []; cum = []; offCount = 0; resumeOnMove = false;
+  if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+  routeLine.setLatLngs([]);
+  clBtn.style.display = 'none';
+  setRt('');
+}
+
+function setDestination(ll) {
+  clearRoute();
+  dest = ll;
+  destMarker = L.marker(ll, { icon: flag, interactive: false }).addTo(map);
+  clBtn.style.display = 'block';
+  if (lastLL) { setRt('Calculando rota...'); fetchRoute(lastLL, true); }
+  else setRt('Aguardando GPS para tracar a rota...');
+}
+
+function fetchRoute(from, fit) {
+  if (!dest || fetching) return;
+  fetching = true; lastFetch = Date.now();
+  var u = 'https://router.project-osrm.org/route/v1/driving/' + from[1] + ',' + from[0] + ';' +
+          dest[1] + ',' + dest[0] + '?overview=full&geometries=geojson';
+  fetch(u).then(function (r) { return r.json(); }).then(function (j) {
+    fetching = false;
+    if (!dest) return;
+    if (j.code !== 'Ok' || !j.routes || !j.routes.length) { setRt('Rota nao encontrada'); return; }
+    var rt = j.routes[0];
+    rpts = rt.geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
+    cum = [0];
+    for (var i = 1; i < rpts.length; i++) cum[i] = cum[i - 1] + hav(rpts[i - 1], rpts[i]);
+    total = cum[cum.length - 1] || 1; dur = rt.duration; ridx = 0; offCount = 0;
+    routeLine.setLatLngs(rpts);
+    if (fit) {
+      map.fitBounds(routeLine.getBounds(), { padding: [70, 70] });
+      follow = false; resumeOnMove = true; rc.style.display = 'block';
+    }
+    if (lastLL) progress(lastLL);
+  }).catch(function () { fetching = false; setRt('Sem conexao para calcular a rota'); });
+}
+
+function progress(ll) {
+  if (!dest || rpts.length < 2) return;
+  var best = 1e12, bi = 0, bt = 0;
+  for (var i = Math.max(0, ridx - 50); i < rpts.length - 1; i++) {
+    var s = segDist(ll, rpts[i], rpts[i + 1]);
+    if (s.d < best) { best = s.d; bi = i; bt = s.t; }
+  }
+  ridx = bi;
+  var rem = Math.max(0, total - (cum[bi] + bt * (cum[bi + 1] - cum[bi])));
+  if (rem < 40) { clearRoute(); setRt('Chegou ao destino!'); setTimeout(function () { if (!dest) setRt(''); }, 6000); return; }
+  setRt(fmtDist(rem) + ' \u00B7 ' + fmtEta(dur * rem / total));
+  if (best > 60) {
+    offCount++;
+    if (offCount >= 3 && Date.now() - lastFetch > 10000) fetchRoute(ll, false);
+  } else offCount = 0;
+}
+
+function search() {
+  var text = q.value.trim();
+  if (!text) return;
+  var u = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&accept-language=pt-BR&q=' +
+          encodeURIComponent(text);
+  if (lastLL) u += '&viewbox=' + (lastLL[1] - 1.5) + ',' + (lastLL[0] + 1.5) + ',' + (lastLL[1] + 1.5) + ',' + (lastLL[0] - 1.5);
+  res.textContent = 'Buscando...'; res.style.display = 'block';
+  fetch(u).then(function (r) { return r.json(); }).then(function (list) {
+    res.textContent = '';
+    if (!list.length) { res.textContent = 'Nada encontrado'; return; }
+    list.forEach(function (p) {
+      var d = document.createElement('div');
+      d.className = 'it'; d.textContent = p.display_name;
+      d.addEventListener('click', function () {
+        res.style.display = 'none'; q.blur(); setDestination([parseFloat(p.lat), parseFloat(p.lon)]);
+      });
+      res.appendChild(d);
+    });
+  }).catch(function () { res.textContent = 'Sem conexao para buscar'; });
+}
+
+document.getElementById('go').addEventListener('click', search);
+q.addEventListener('keydown', function (e) { if (e.key === 'Enter') search(); });
+clBtn.addEventListener('click', function () { clearRoute(); res.style.display = 'none'; q.value = ''; });
+dsBtn.addEventListener('click', function () {
+  pickMode = !pickMode;
+  dsBtn.classList.toggle('on', pickMode);
+  hint.style.display = pickMode ? 'block' : 'none';
+});
+map.on('click', function (e) {
+  res.style.display = 'none';
+  if (pickMode) {
+    pickMode = false; dsBtn.classList.remove('on'); hint.style.display = 'none';
+    setDestination([e.latlng.lat, e.latlng.lng]);
+  }
 });
 </script>
 </body>
